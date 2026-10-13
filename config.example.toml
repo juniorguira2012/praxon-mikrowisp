@@ -1,0 +1,163 @@
+# =============================================================================
+# Mikrowisp Proxy — example configuration
+# =============================================================================
+#
+# This proxy sits between an upstream caller (Axentra ERP) and a Mikrowisp
+# installation. Its job is to forward API requests transparently, but for two
+# specific endpoints it can OPTIONALLY filter rows out of the response based
+# on per-customer "extra" fields:
+#
+#   - /api/v1/GetClientsDetails  — drops clients whose extras match any rule
+#   - /api/v1/GetInvoices        — drops invoices whose `idcliente` belongs
+#                                  to a client that would have been dropped
+#                                  by the rule above
+#
+# Every other Mikrowisp endpoint (Ping, PaidInvoice, etc.) is forwarded as-is.
+#
+# IMPORTANT — LEGAL POSITIONING
+# -----------------------------------------------------------------------------
+# The Axentra ERP is a certified e-CF emitter and is required by DGII rules
+# to issue an electronic comprobante for every taxable transaction it sees.
+# That means Axentra cannot legally choose to skip e-CF emission for any
+# customer. This proxy gives the OPERATOR (the customer running this proxy)
+# a place to filter customers OUT of the data flow BEFORE Axentra ever sees
+# them. Anything filtered here is invisible to Axentra; Axentra emits e-CFs
+# only for the customers that survive the filter.
+#
+# Running this proxy is the operator's choice and the operator's
+# responsibility under DR tax law. Axentra provides the tool; the operator
+# decides how to use it and bears the legal consequence.
+# =============================================================================
+
+
+# -----------------------------------------------------------------------------
+# [server]
+# Where this proxy listens. The upstream caller (Axentra) points its
+# Mikrowisp `base_url` config at this address instead of the real Mikrowisp.
+# -----------------------------------------------------------------------------
+[server]
+
+# IP and port to bind to. Use 0.0.0.0 inside Docker so the host can reach it.
+# Default: 0.0.0.0:8080
+bind = "0.0.0.0:8080"
+
+# Read/write timeouts on inbound requests. The proxy holds the connection
+# open while it forwards to upstream + applies filters; timeouts must be
+# generous enough to cover that. 60s is comfortable for most installs.
+read_timeout_seconds  = 60
+write_timeout_seconds = 60
+
+
+# -----------------------------------------------------------------------------
+# [upstream]
+# Where the real Mikrowisp installation lives. The proxy forwards every
+# request body verbatim (including the `token` field that callers send).
+# We never strip, rewrite, or persist the token — it travels through this
+# process in memory only and is forgotten on response.
+# -----------------------------------------------------------------------------
+[upstream]
+
+# Full base URL of the Mikrowisp install. Do NOT include a trailing slash;
+# the proxy appends `/api/v1/<endpoint>` itself.
+#
+# Examples:
+#   "https://miempresa.mikrosystem.net"
+#   "http://192.168.1.10"
+base_url = "https://miempresa.mikrosystem.net"
+
+# Connect / read timeout against upstream. Mikrowisp installs on slow links
+# may need longer; 30s is the sane default and matches Axentra's own
+# Mikrowisp client timeout.
+timeout_seconds = 30
+
+# When true, the proxy will skip TLS certificate verification on the
+# upstream connection. Useful when the upstream Mikrowisp uses a self-signed
+# cert on a private LAN. NEVER enable this when upstream is on the public
+# internet — it lets a network attacker silently swap the response.
+insecure_skip_verify = false
+
+
+# -----------------------------------------------------------------------------
+# [logging]
+# How the proxy emits operational logs. Logs do NOT include request bodies
+# or tokens — only request paths, status codes, and filter decisions
+# (e.g. "filtered 12 of 100 invoices on rule tipo_cliente=informal").
+# -----------------------------------------------------------------------------
+[logging]
+
+# One of: "debug", "info", "warn", "error".
+# debug also emits per-rule trace lines for every filter decision.
+level = "info"
+
+# When true, logs are emitted as JSON (one object per line). Useful when
+# piping into a log aggregator. When false, logs are human-readable text.
+json = false
+
+
+# -----------------------------------------------------------------------------
+# [[filter.exclude]]
+# Per-customer exclusion rules. The proxy walks every rule in declaration
+# order against each customer; if ANY rule matches, the customer is dropped
+# from `GetClientsDetails`, AND every invoice belonging to that customer is
+# dropped from `GetInvoices`.
+#
+# Matching is exact-string equality after a JSON canonicalization of the
+# extra field's value (booleans become "true"/"false", numbers become their
+# numeric string, strings stay as-is). To match an empty value (the field
+# is present but the operator left it blank in Mikrowisp), use `value = ""`.
+#
+# To match the ABSENCE of a field (the field doesn't exist on the customer
+# at all), use `present = false` and omit `value`.
+#
+# Multiple rules act as an OR: a customer is excluded if any rule matches.
+# To express "field A=X AND field B=Y", model both criteria in your
+# Mikrowisp data and add a single combined rule against a single field.
+# This proxy intentionally does NOT support boolean compositions to keep
+# the operator's mental model simple and the audit trail flat.
+#
+# Examples (all commented out by default):
+# -----------------------------------------------------------------------------
+
+# # Drop customers Mikrowisp tags as informal (no e-CF should ever be issued
+# # for them, per the operator's legal arrangement with the DGII).
+# [[filter.exclude]]
+# field = "tipo_cliente"
+# value = "informal"
+
+# # Drop a specific government account that is invoiced manually outside
+# # the electronic flow.
+# [[filter.exclude]]
+# field = "tipo_cuenta"
+# value = "GOBIERNO_ESPECIAL"
+
+# # Drop customers flagged as "test" (catch-all for QA noise that leaked
+# # into production data).
+# [[filter.exclude]]
+# field = "etiqueta"
+# value = "test"
+
+# # Drop customers where the operator has not yet filled in a required
+# # custom field. Useful while the dataset is being tidied up.
+# [[filter.exclude]]
+# field = "rnc_factura"
+# present = false
+
+
+# -----------------------------------------------------------------------------
+# [filter.cache]
+# Internal cache used to avoid re-fetching the customer's extras on every
+# invoice request. The cache is keyed by customer ID and stores only the
+# exclusion verdict (true / false), never the actual extra-field values.
+# -----------------------------------------------------------------------------
+[filter.cache]
+
+# How long a verdict stays cached before the proxy re-checks the upstream
+# customer record. Lower values = faster reaction to operator changes in
+# Mikrowisp; higher values = fewer round-trips. 5 minutes is the default
+# and matches typical sync cadences.
+ttl_seconds = 300
+
+# Max number of customer verdicts the cache will hold. Beyond this, oldest
+# entries are evicted. Tuned for a 5,000-customer ISP; raise it if your
+# install is bigger.
+max_entries = 10000

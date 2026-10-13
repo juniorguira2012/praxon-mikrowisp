@@ -1,0 +1,29 @@
+version: '3.8'
+
+services:
+  mikrowisp-proxy:
+    image: juniordone/mikrowisp-proxy:v1.0.0
+    dns:
+      - 1.1.1.1
+      - 8.8.8.8
+    extra_hosts:
+      - "mikrowisp.oneredrd.com:104.21.29.42"
+    environment:
+      - TZ=America/Santo_Domingo
+    networks:
+      - network_public
+    deploy:
+      restart_policy:
+        condition: on-failure
+      labels:
+        - "traefik.enable=true"
+        - "traefik.http.routers.mikrowisp-proxy.rule=Host(`praxon.oneredrd.com`)"
+        - "traefik.http.routers.mikrowisp-proxy.entrypoints=websecure"
+        - "traefik.http.routers.mikrowisp-proxy.tls=true"
+        - "traefik.http.routers.mikrowisp-proxy.tls.certresolver=letsencryptresolver"
+        - "traefik.http.services.mikrowisp-proxy.loadbalancer.server.port=8080"
+        - "traefik.docker.network=network_public"
+
+networks:
+  network_public:
+    external: true

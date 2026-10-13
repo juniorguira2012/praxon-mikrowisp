@@ -1,0 +1,17 @@
+# Binaries
+mikrowisp-proxy
+/bin/
+/out/
+
+# Local config (operator's secrets live here)
+config.toml
+*.local.toml
+
+# Editor / OS noise
+.vscode/
+.idea/
+.DS_Store
+
+# Test coverage artifacts
+*.out
+coverage.html
